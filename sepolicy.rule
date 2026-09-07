@@ -1,0 +1,5 @@
+# Dedicated label for the single filtered temp_state proxy. This avoids granting system_app any
+# additional access to generic system_file objects. The type and rule exist only while this Magisk
+# module is enabled and disappear on reboot after disable/uninstall.
+type hypertorch_temp_state file_type
+allow system_app hypertorch_temp_state file { getattr open read }

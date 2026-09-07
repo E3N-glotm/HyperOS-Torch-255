@@ -1,0 +1,6 @@
+id=hyperos_torch_255
+name=HyperOS Control Center Torch 255
+version=1.5.0
+versionCode=150
+author=E3N
+description=Pure Magisk/systemless HyperOS torch enhancement: 500 mA Camera HAL ceiling, PowerKeeper-only filtering of the OEM early torch thermal state while the torch is active, and an 80 C / 75 C brightness hysteresis governor. No LSPosed/Zygisk/Xposed hook; kernel and PMIC final protections remain authoritative; uninstall + reboot restores stock.
