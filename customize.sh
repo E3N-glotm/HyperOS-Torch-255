@@ -11,18 +11,14 @@ TARGET="/odm/etc/camera/camxoverridesettings.txt"
 ui_print "*******************************"
 ui_print " HyperOS Control Center Torch 255"
 ui_print "*******************************"
-ui_print "Target: Xiaomi 17 / pudding"
+ui_print "Hardware: Xiaomi pudding, capability-verified (ROM-version independent)"
 
 DEVICE="$(getprop ro.product.device)"
-SDK="$(getprop ro.build.version.sdk)"
 
 if [ "$DEVICE" != "pudding" ]; then
   abort "Unsupported device: $DEVICE. This build is calibrated for pudding only."
 fi
 
-if [ "$SDK" -lt 36 ]; then
-  abort "Unsupported Android SDK: $SDK. Android 16 / SDK 36 or newer is required."
-fi
 
 if [ ! -r "$TARGET" ]; then
   abort "Required Camera HAL configuration is unavailable: $TARGET"
@@ -42,6 +38,20 @@ if ! grep -q '^FlashTorchCurrentSwitch=TRUE$' "$TARGET"; then
   abort "OEM FlashTorchCurrentSwitch is not enabled; refusing to alter an unknown HAL path."
 fi
 
+# Probe required runtime kernel and OEM service interfaces instead of SDK number.
+if [ ! -r /sys/class/thermal/thermal_message/temp_state ]; then
+  abort "Thermal temp_state capability not available; refuse governor"
+fi
+if [ ! -r "$NODE/flash_strobe" ] || [ ! -r "$NODE/brightness" ]; then
+  abort "Torch strobe and brightness interfaces unavailable"
+fi
+if ! pm path com.miui.powerkeeper >/dev/null 2>&1; then
+  abort "OEM PowerKeeper is absent; the per-process thermal isolation path cannot be verified"
+fi
+if ! find /sys/class/thermal/thermal_zone*/type -type f -exec grep -l -x flash_therm {} + 2>/dev/null | grep -q .; then
+  abort "flash_therm kernel thermal sensor interface absent"
+fi
+
 if [ ! -r "$NODE/max_brightness" ]; then
   abort "Required flashlight capability node is unavailable: $NODE/max_brightness"
 fi
@@ -51,7 +61,7 @@ if [ "$MAX" != "255" ]; then
   abort "Unexpected kernel brightness range: max_brightness=$MAX (expected 255)."
 fi
 
-ui_print "Verified Xiaomi 17 / pudding Camera HAL torch path"
+ui_print "Verified pudding Camera HAL, flash sensor, and PowerKeeper interfaces"
 ui_print "OEM overrideFlashTorchCurrent: ${STOCK_CURRENT} mA"
 ui_print "Module overrideFlashTorchCurrent: 500 mA"
 ui_print "HyperOS still owns the native 1..100 slider and Camera HAL calls."
