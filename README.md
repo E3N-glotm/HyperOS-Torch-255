@@ -1,5 +1,14 @@
 # HyperOS Torch 255
 
+## v1.5.1 — 实际接口探测 / Capability-based installation
+
+安装器不再判断 Android SDK 版本（例如 36 或 37），而是检测 **pudding** 当前固件中的 Camera HAL `overrideFlashTorchCurrent` 和 `FlashTorchCurrentSwitch`、LED `brightness/max_brightness/flash_strobe`、`flash_therm` 温度传感器、`thermal_message/temp_state` 及 PowerKeeper 服务。缺失必要接口即拒绝安装。
+
+保留 pudding 硬件身份判断，因为 500mA 手电筒电流及散热门槛不能直接推广到不同灯珠/驱动硬件。不会直接修改原厂分区；OTA 后开机每次重新读取当前 ODM 文件和节点。
+
+v1.5.1 的 native thermal_governor 与 1.5.0 保持一致；未验证全部未来固件的闪光灯驱动行为，请勿把“接口存在”理解为已完成长期热安全测试。
+
+
 **简体中文** | [English](README_EN.md)
 
 面向 Xiaomi 17（`pudding`，Android 16 / HyperOS）的 Magisk 手电筒增强模块。在不替换 SystemUI、不使用 LSPosed/Zygisk/Xposed 的前提下，保留 HyperOS 原生控制中心手电筒与亮度滑条，并把最高持续亮度扩展到驱动正常 `brightness` 范围的 `255`。
