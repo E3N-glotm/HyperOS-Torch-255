@@ -1,6 +1,10 @@
 # HyperOS Torch 255
 
-[简体中文](README.md) | **English**
+**Language: [简体中文](README.md) | English (current)**
+
+**Current version: v1.5.1.** The installer checks actual Camera HAL, LED sysfs, thermal sensor, and PowerKeeper capabilities instead of imposing an Android SDK minimum. The `pudding` hardware restriction remains; long-duration thermal safety is not established by interface checks.
+
+
 
 A Magisk flashlight enhancement module for Xiaomi 17 (`pudding`, Android 16 / HyperOS). It keeps the stock HyperOS Control Center flashlight and strength slider, while extending the maximum continuous output to the normal driver `brightness` ceiling of `255`, without replacing SystemUI or relying on LSPosed/Zygisk/Xposed.
 
@@ -144,4 +148,3 @@ The app does not store a root password, Magisk token or secret. Its local prefer
 
 - Magisk module: **v1.5.0 / versionCode 150**
 - Companion APK: **RootTorch v1.0.2 / versionCode 12**
-
