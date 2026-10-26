@@ -3,4 +3,4 @@ name=HyperOS Control Center Torch 255
 version=1.5.1
 versionCode=151
 author=E3N
-description=Capability-probed Camera HAL/sysfs/PowerKeeper interfaces, ROM-SDK-independent pudding hardware. Pure Magisk/systemless HyperOS torch enhancement: 500 mA Camera HAL ceiling, PowerKeeper-only filtering of the OEM early torch thermal state while the torch is active, and an 80 C / 75 C brightness hysteresis governor. No LSPosed/Zygisk/Xposed hook; kernel and PMIC final protections remain authoritative; uninstall + reboot restores stock.
+description=小米 pudding 原生手电筒增强：按实际 Camera HAL 与温度接口检测，扩展亮度并提供 80/75°C 回滞降档；保留内核与 PMIC 最终保护。
