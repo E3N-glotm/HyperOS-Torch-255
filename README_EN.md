@@ -2,7 +2,7 @@
 
 **Language: [简体中文](README.md) | English**
 
-Development version: **v1.6.0-alpha.1**. Installation is no longer restricted to a device codename. Read-only capability discovery is independent from high-output calibration: calibrated hardware can enable enhancement; other devices retain stock current and thermal policy and receive an actionable interface report.
+Development version: **v1.6.0-alpha.2**. Installation is no longer restricted to a device codename. Read-only capability discovery is independent from high-output calibration: calibrated hardware can enable enhancement; other devices retain stock current and thermal policy and receive an actionable interface report.
 
 ## Discovery and compatibility
 
@@ -22,7 +22,9 @@ The pudding profile requires the expected LED, 255 range, CamX keys and original
 
 Kernel thermal trips and PMIC shutdown remain unchanged. No `flash_brightness` writes and no forced `flash_strobe=1`. A driver-terminated session is never reasserted. Namespace filtering is refused if PowerKeeper shares PID 1's mount namespace.
 
-High output increases LED heat; historical tests are not lifetime validation. This revision has fixture-based discovery and native state-machine tests, but no new phone cold-boot or multi-device validation yet.
+High output increases LED heat; historical tests are not lifetime validation. This revision passes 36 regression tests and was installed and hot-tested on pudding / Android 17. Five short Camera API maximum-strength samples read brightness=255 and strobe=1; both returned to zero after switch-off. The private PowerKeeper filter was mounted while on and removed after switch-off. Native hysteresis, sensor-loss and stale-target cancellation were also exercised using temporary files on the phone, without heating the physical LED to the trip threshold. Cold-boot, multi-device and long-duration validation remain pending.
+
+The device test fixed an Android Shell LINES-variable collision and resolves the calibrated pudding / SM8850 three-channel topology explicitly. Unknown multi-channel layouts remain ambiguous. Startup scripts canonicalize their module directory before entering another mount namespace.
 
 ## Installation
 
@@ -61,3 +63,4 @@ python3 -m unittest discover -s tests -v
 `lib/discovery.sh` and `probe.sh` implement read-only discovery. The boot manifest is separate from action-page reports, so diagnostic actions cannot change the active configuration. `thermal_governor.c` accepts validated paths/ranges/thresholds and provides a read-only `--check` preflight. CI compiles the native binary from source and packages all scripts.
 
 Interface references: [Linux LED class](https://docs.kernel.org/leds/leds-class.html) and [Linux Flash LED class](https://docs.kernel.org/leds/leds-class-flash.html).
+

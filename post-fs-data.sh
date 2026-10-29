@@ -1,5 +1,5 @@
 #!/system/bin/sh
-MODDIR=${0%/*}
+MODDIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P) || exit 1
 . "$MODDIR/lib/discovery.sh"
 REPORT="$MODDIR/.runtime-capabilities"
 TMP="$MODDIR/.camxoverridesettings.generated.tmp"

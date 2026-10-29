@@ -97,6 +97,26 @@ class Discovery(unittest.TestCase):
         self.full(); self.led('white:torch')
         self.assertEqual(self.probe()['reason'], 'led_missing_or_ambiguous')
 
+    def test_calibrated_three_channel_topology(self):
+        self.full(); self.led('white:flash-1'); self.led('amber:flash-2')
+        d = self.probe()
+        self.assertEqual(d['led_count'], '3')
+        self.assertEqual(d['led_selection'], 'calibrated_profile')
+        self.assertTrue(d['led'].endswith('yellow:flash-0'))
+        self.assertEqual(d['mode'], 'calibrated')
+
+    def test_unknown_three_channel_topology_stays_ambiguous(self):
+        self.full(); self.led('white:flash-1'); self.led('amber:flash-2')
+        self.device = 'haotian'
+        self.assertEqual(self.probe()['reason'], 'led_missing_or_ambiguous')
+
+    def test_unexpected_extra_channel_stays_ambiguous(self):
+        self.full(); self.led('white:flash-1'); self.led('amber:flash-2'); self.led('rear:torch')
+        self.assertEqual(self.probe()['reason'], 'led_missing_or_ambiguous')
+
+    def test_shell_terminal_lines_variable_is_not_used(self):
+        self.assertNotRegex((ROOT / 'lib/discovery.sh').read_text(), r'\bLINES=')
+
     def test_led_alias_dedup(self):
         self.full()
         (self.root / 'sys/class/leds/alias:torch').symlink_to('yellow:flash-0')

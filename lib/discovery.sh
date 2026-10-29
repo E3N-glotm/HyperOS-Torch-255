@@ -14,12 +14,14 @@ ht_emit() {
 
 ht_discover() {
   DEVICE=$(getprop ro.product.device 2>/dev/null)
+  SOC=$(getprop ro.soc.model 2>/dev/null)
   ht_emit format 1
   ht_emit device "$DEVICE"
-  ht_emit soc "$(getprop ro.soc.model 2>/dev/null)"
+  ht_emit soc "$SOC"
 
   # Class symlinks are resolved to avoid treating aliases as separate LEDs.
   LED_COUNT=0; LED_SEEN='|'; LED_PATH=; LED_MAX=; LED_KIND=; STROBE=
+  PROFILE_LED=; PROFILE_STROBE=; PROFILE_LED_UNEXPECTED=0
   for LED in "$HT_ROOT"/sys/class/leds/*; do
     [ -d "$LED" ] || continue
     NAME=$(basename "$(ht_realpath "$LED")" | tr '[:upper:]' '[:lower:]')
@@ -45,9 +47,26 @@ ht_discover() {
     [ "$KIND" = flash_candidate ] && continue
     LED_COUNT=$((LED_COUNT + 1))
     LED_PATH="$CANON"; LED_MAX="$MAX"; LED_KIND="$KIND"; STROBE="$S"
+    # The validated device exposes three color channels. Its calibrated continuous
+    # channel is explicit; this is not a first-candidate rule for unknown hardware.
+    case "$DEVICE:$SOC:$NAME:$KIND:$MAX" in
+      pudding:SM8850:yellow:flash-0:shared_flash_torch:255)
+        PROFILE_LED="$CANON"; PROFILE_STROBE="$S" ;;
+      pudding:SM8850:white:flash-1:shared_flash_torch:255|pudding:SM8850:amber:flash-2:shared_flash_torch:255) ;;
+      *) PROFILE_LED_UNEXPECTED=1 ;;
+    esac
   done
   ht_emit led_count "$LED_COUNT"
+  LED_SELECTED=0
   if [ "$LED_COUNT" = 1 ]; then
+    LED_SELECTED=1
+    ht_emit led_selection unique_interface
+  elif [ -n "$PROFILE_LED" ] && [ "$PROFILE_LED_UNEXPECTED" = 0 ]; then
+    LED_SELECTED=1
+    LED_PATH="$PROFILE_LED"; LED_MAX=255; LED_KIND=shared_flash_torch; STROBE="$PROFILE_STROBE"
+    ht_emit led_selection calibrated_profile
+  fi
+  if [ "$LED_SELECTED" = 1 ]; then
     ht_emit led "$LED_PATH"
     ht_emit led_kind "$LED_KIND"
     ht_emit max_brightness "$LED_MAX"
@@ -64,11 +83,11 @@ ht_discover() {
       CANON=$(ht_realpath "$FILE")
       case "$HAL_SEEN" in *"|$CANON|"*) continue ;; esac
       HAL_SEEN="$HAL_SEEN$CANON|"
-      LINES=$(awk '/^[ \t]*overrideFlashTorchCurrent[ \t]*=/ {n++} END {print n+0}' "$FILE")
+      TORCH_KEY_COUNT=$(awk '/^[ \t]*overrideFlashTorchCurrent[ \t]*=/ {n++} END {print n+0}' "$FILE")
       CURRENT=$(awk -F= '/^[ \t]*overrideFlashTorchCurrent[ \t]*=/ {gsub(/[ \t\r]/,"",$2); print $2}' "$FILE")
       SWITCH=$(awk -F= '/^[ \t]*FlashTorchCurrentSwitch[ \t]*=/ {gsub(/[ \t\r]/,"",$2); print $2}' "$FILE")
-      ht_emit hal_candidate "$FILE|torch_keys=$LINES|current=$CURRENT|switch=$SWITCH"
-      [ "$LINES" = 1 ] && [ "$SWITCH" = TRUE ] && ht_uint "$CURRENT" || continue
+      ht_emit hal_candidate "$FILE|torch_keys=$TORCH_KEY_COUNT|current=$CURRENT|switch=$SWITCH"
+      [ "$TORCH_KEY_COUNT" = 1 ] && [ "$SWITCH" = TRUE ] && ht_uint "$CURRENT" || continue
       [ "$CURRENT" -gt 0 ] && [ "$CURRENT" -le 5000 ] || continue
       HAL_COUNT=$((HAL_COUNT + 1)); HAL_PATH="$FILE"; HAL_CURRENT="$CURRENT"
     done
@@ -117,10 +136,10 @@ ht_discover() {
   # Enhancement calibration is separate from interface discovery. 255 is a device
   # scale, not a universal LED current limit. New hardware can install and diagnose.
   PROFILE=; REASON=calibration_required
-  if [ "$LED_COUNT" != 1 ]; then REASON=led_missing_or_ambiguous
+  if [ "$LED_SELECTED" != 1 ]; then REASON=led_missing_or_ambiguous
   elif [ "$HAL_COUNT" != 1 ]; then REASON=hal_missing_or_ambiguous
   elif [ "$SENSOR_COUNT" != 1 ]; then REASON=thermal_missing_or_ambiguous
-  elif [ "$DEVICE" = pudding ] && [ "$LED_KIND" = shared_flash_torch ] && \
+  elif [ "$DEVICE" = pudding ] && [ "$SOC" = SM8850 ] && [ "$LED_KIND" = shared_flash_torch ] && \
        [ "$(basename "$LED_PATH")" = yellow:flash-0 ] && [ "$LED_MAX" = 255 ] && \
        [ "$SENSOR_TYPE" = flash_therm ] && [ -r "$TEMP_STATE" ] && [ "$PK" = 1 ] && \
        { [ "$HAL_CURRENT" = 150 ] || [ "$HAL_CURRENT" = 500 ]; }; then

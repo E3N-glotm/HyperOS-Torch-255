@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-MODDIR=${0%/*}
+MODDIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P) || exit 1
 BIN="$MODDIR/bin/thermal_governor"
 . "$MODDIR/lib/discovery.sh"
 REPORT="$MODDIR/.runtime-capabilities"
@@ -92,4 +92,3 @@ cleanup_filter_mount
 rm -f "$PROXY" "$STOPFILE"
 log_i "service stopped; stock PowerKeeper temp_state view restored"
 exit 0
-
