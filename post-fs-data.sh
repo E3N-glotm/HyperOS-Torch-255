@@ -1,72 +1,50 @@
 #!/system/bin/sh
-
-MODDIR=${0%/*}
-TAG=HyperTorch255
-TARGET=/odm/etc/camera/camxoverridesettings.txt
-GENERATED="$MODDIR/.camxoverridesettings.generated"
+MODDIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P) || exit 1
+. "$MODDIR/lib/discovery.sh"
+REPORT="$MODDIR/.runtime-capabilities"
 TMP="$MODDIR/.camxoverridesettings.generated.tmp"
-DESIRED_CURRENT=500
-
-log_i() {
-  /system/bin/log -p i -t "$TAG" "$*" 2>/dev/null || true
-}
-
-log_e() {
-  /system/bin/log -p e -t "$TAG" "$*" 2>/dev/null || true
-}
-
+GENERATED="$MODDIR/.camxoverridesettings.generated"
+log_i() { /system/bin/log -p i -t HyperTorch255 "$*" 2>/dev/null || true; }
 fail() {
-  log_e "$*"
-  rm -f "$TMP"
+  rm -f "$TMP" "$MODDIR/.hal-ready"
+  ht_status "$MODDIR" "未启用增强 | $*"
+  log_i "$*"
   exit 1
 }
+# Read-only discovery runs again after every boot/OTA; never reuse installer paths.
+rm -f "$MODDIR/.hal-ready"
+sh "$MODDIR/probe.sh" --output "$REPORT" || fail "接口检测失败"
+[ "$(ht_field "$REPORT" mode)" = calibrated ] || {
+  ht_status "$MODDIR" "仅诊断 | $(ht_reason_zh "$(ht_field "$REPORT" reason)")"
+  exit 0
+}
+TARGET=$(ht_field "$REPORT" hal)
+DESIRED_CURRENT=$(ht_field "$REPORT" target_current_ma)
+[ -x /system/bin/nsenter ] && [ -x /system/bin/mount ] || fail "缺少挂载工具"
 
-# post-fs-data runs before Camera Provider starts. Work in PID 1's mount namespace explicitly so
-# the provider inherits this bind mount. This avoids any runtime HAL/sysfs competition.
-[ -x /system/bin/nsenter ] || fail "nsenter is unavailable"
-[ -x /system/bin/mount ] || fail "mount is unavailable"
-
-# Refuse to stack over another module's live mount. A normal boot reaches this point with the
-# pristine ODM file visible. If this module was invoked twice and its generated file is already
-# mounted, the desired value is already active and there is nothing else to do.
-MOUNT_LINE="$(/system/bin/nsenter -t 1 -m -- grep " /odm/etc/camera/camxoverridesettings.txt " /proc/self/mountinfo 2>/dev/null | head -n 1)"
+MOUNT_LINE=$(/system/bin/nsenter -t 1 -m -- awk -v target="$(ht_realpath "$TARGET")" '$5 == target {print}' /proc/self/mountinfo 2>/dev/null)
 if [ -n "$MOUNT_LINE" ]; then
   case "$MOUNT_LINE" in
     *hyperos_torch_255*.camxoverridesettings.generated*)
-      if /system/bin/nsenter -t 1 -m -- grep -q "^overrideFlashTorchCurrent=${DESIRED_CURRENT}$" "$TARGET" 2>/dev/null; then
-        log_i "HAL override already mounted: ${DESIRED_CURRENT} mA"
-        exit 0
-      fi
-      ;;
-    *) fail "refusing to stack over an existing mount at $TARGET" ;;
+      /system/bin/nsenter -t 1 -m -- grep -q "^overrideFlashTorchCurrent=${DESIRED_CURRENT}$" "$TARGET" || fail "已有覆盖不匹配"
+      cat /proc/sys/kernel/random/boot_id > "$MODDIR/.hal-ready"
+      ht_status "$MODDIR" "框架配置已挂载 | 等待温控启动"
+      exit 0 ;;
+    *) fail "检测到其他配置挂载" ;;
   esac
 fi
-
-# Copy the currently installed firmware file on every boot. This keeps every unrelated OEM camera
-# setting in sync across OTA updates; only overrideFlashTorchCurrent is changed below.
-/system/bin/nsenter -t 1 -m -- cat "$TARGET" > "$TMP" 2>/dev/null || fail "cannot read pristine $TARGET"
-
-TORCH_LINES="$(grep -c '^overrideFlashTorchCurrent=' "$TMP" 2>/dev/null)"
-[ "$TORCH_LINES" = "1" ] || fail "unexpected overrideFlashTorchCurrent count=$TORCH_LINES"
-grep -q '^FlashTorchCurrentSwitch=TRUE$' "$TMP" || fail "FlashTorchCurrentSwitch is not TRUE"
-
-ORIGINAL_CURRENT="$(sed -n 's/^overrideFlashTorchCurrent=//p' "$TMP" | head -n 1)"
-case "$ORIGINAL_CURRENT" in
-  ''|*[!0-9]*) fail "invalid OEM torch current: $ORIGINAL_CURRENT" ;;
-esac
-
-sed "s/^overrideFlashTorchCurrent=.*/overrideFlashTorchCurrent=${DESIRED_CURRENT}/" "$TMP" > "$GENERATED" || fail "cannot generate HAL override"
+/system/bin/nsenter -t 1 -m -- cat "$TARGET" > "$TMP" 2>/dev/null || fail "无法读取原厂 HAL"
+# Only the calibrated, known original value is enhanced; never lower a new OEM limit.
+[ "$(awk -F= '/^[ \t]*overrideFlashTorchCurrent[ \t]*=/ {gsub(/[ \t\r]/,"",$2); print $2}' "$TMP")" = 150 ] || fail "原厂电流已变化，需重新校准"
+awk -v current="$DESIRED_CURRENT" '
+  /^[ \t]*overrideFlashTorchCurrent[ \t]*=/ {print "overrideFlashTorchCurrent=" current; next}
+  {print}
+' "$TMP" > "$GENERATED" || fail "生成覆盖失败"
 rm -f "$TMP"
-
-[ "$(grep -c '^overrideFlashTorchCurrent=' "$GENERATED" 2>/dev/null)" = "1" ] || fail "generated config validation failed"
-grep -q "^overrideFlashTorchCurrent=${DESIRED_CURRENT}$" "$GENERATED" || fail "generated current validation failed"
-
-chown 0:0 "$GENERATED" || fail "cannot chown generated config"
-chmod 0644 "$GENERATED" || fail "cannot chmod generated config"
-chcon u:object_r:vendor_configs_file:s0 "$GENERATED" 2>/dev/null || fail "cannot apply vendor_configs_file SELinux label"
-
-/system/bin/nsenter -t 1 -m -- /system/bin/mount --bind "$GENERATED" "$TARGET" || fail "PID1 bind mount failed"
-/system/bin/nsenter -t 1 -m -- grep -q "^overrideFlashTorchCurrent=${DESIRED_CURRENT}$" "$TARGET" 2>/dev/null || fail "PID1 mount verification failed"
-
-log_i "native Camera HAL torch current ${ORIGINAL_CURRENT} -> ${DESIRED_CURRENT} mA; OEM thermal/kernel safety unchanged"
-exit 0
+chown 0:0 "$GENERATED" && chmod 0644 "$GENERATED" || fail "配置权限失败"
+chcon u:object_r:vendor_configs_file:s0 "$GENERATED" 2>/dev/null || fail "配置标签失败"
+/system/bin/nsenter -t 1 -m -- /system/bin/mount --bind "$GENERATED" "$TARGET" || fail "HAL 挂载失败"
+/system/bin/nsenter -t 1 -m -- grep -q "^overrideFlashTorchCurrent=${DESIRED_CURRENT}$" "$TARGET" || fail "HAL 校验失败"
+cat /proc/sys/kernel/random/boot_id > "$MODDIR/.hal-ready"
+ht_status "$MODDIR" "HAL 已挂载 | 等待温控启动"
+log_i "Camera HAL: $TARGET, torch current 150 -> $DESIRED_CURRENT mA"

@@ -1,6 +1,6 @@
 id=hyperos_torch_255
 name=HyperOS Control Center Torch 255
-version=1.5.1
-versionCode=151
+version=1.6.0
+versionCode=16003
 author=E3N
-description=小米 pudding 原生手电筒增强：按实际 Camera HAL 与温度接口检测，扩展亮度并提供 80/75°C 回滞降档；保留内核与 PMIC 最终保护。
+description=状态: 待重启检测 | 自动识别 LED、Camera HAL 与温度传感器，按校准结果启用功能。
