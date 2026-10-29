@@ -17,6 +17,9 @@ jobs:
           set -euo pipefail
           for f in *.sh lib/*.sh; do sh -n "$f"; done
           python3 -m unittest discover -s tests -v
+          mkdir -p .test-build/core-tests
+          javac -source 8 -target 8 -d .test-build/core-tests src/TorchProbeCore.java tests/TorchProbeCoreTest.java
+          java -ea -cp .test-build/core-tests TorchProbeCoreTest
       - name: Set up Android SDK tools
         uses: android-actions/setup-android@v4
       - name: Build Android ARM64 governor from source
@@ -27,6 +30,19 @@ jobs:
           "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang" \
             -Wall -Wextra -Werror -O2 -fPIE -pie src/thermal_governor.c -llog -o bin/thermal_governor
           file bin/thermal_governor
+      - name: Build installer Camera API probe
+        run: |
+          set -euo pipefail
+          PLATFORM="$ANDROID_HOME/platforms/android-36/android.jar"
+          D8="$ANDROID_HOME/build-tools/36.0.0/d8"
+          if [ ! -f "$PLATFORM" ] || [ ! -x "$D8" ]; then
+            sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+          fi
+          mkdir -p .test-build/probe-classes .test-build/probe-dex
+          javac -source 8 -target 8 -classpath "$PLATFORM" -d .test-build/probe-classes src/TorchProbeCore.java src/TorchProbe.java
+          "$D8" --min-api 26 --lib "$PLATFORM" --output .test-build/probe-dex .test-build/probe-classes/*.class
+          cp .test-build/probe-dex/classes.dex bin/torch_probe.dex
+          test -s bin/torch_probe.dex
       - name: Package ZIP
         run: |
           set -euo pipefail
@@ -34,7 +50,7 @@ jobs:
           PACKAGE="HyperOS-Torch-255-v${VERSION}.zip"
           chmod 0755 *.sh bin/thermal_governor
           zip -q -9 -r "$PACKAGE" module.prop customize.sh post-fs-data.sh service.sh \
-            uninstall.sh action.sh probe.sh lib sepolicy.rule bin/thermal_governor
+            uninstall.sh action.sh probe.sh native-probe.sh lib sepolicy.rule bin/thermal_governor bin/torch_probe.dex
           unzip -t "$PACKAGE"
           sha256sum "$PACKAGE" > "$PACKAGE.sha256"
       - uses: actions/upload-artifact@v4

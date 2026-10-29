@@ -2,59 +2,74 @@
 
 **语言：简体中文（当前） | [English](README_EN.md)**
 
-**正式版：v1.6.0** · [下载最新版](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest)。保留 HyperOS 原生手电筒，按实际接口进行检测；安装不再按机型代号拒绝。已校准硬件启用增强，其他硬件保留原厂亮度和温控，并提供兼容性报告。
+**开发版：v1.7.0-alpha.1**。新增安装时的原生手电筒实测：通过 Android Camera API 短时点亮，比较关灯、低档、最高档和再次关灯的驱动读数，自动识别实际响应的照明接口。
 
-## 本版改动
+[当前正式版 v1.6.0](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest) 仍保持不变。
 
-| 项目 | 新行为 |
+## 安装时实测
+
+安装器先扫描 LED、Camera HAL 和温度接口，再调用随模块提供的临时 DEX 程序；不安装独立 App，不依赖 LSPosed 或 Zygisk。
+
+| 项目 | 检测行为 |
 | --- | --- |
-| LED 查找 | 枚举 `/sys/class/leds`，识别 torch、flashlight 和带 strobe 的 flash 节点，去除符号链接重复项 |
-| 已校准多通道 | 按 pudding / SM8850 校准配置识别三个闪光灯通道中的持续照明通道，未知拓扑仍报告多候选 |
-| 亮度范围 | 读取各节点的 `max_brightness`，支持报告 31、100、255、1023 等不同量程，不统一按 255 处理 |
-| Camera HAL | 查找 odm、vendor、product 及 system 的对应分区目录，支持 camera 下两级子目录，校验键的数量与格式 |
-| 温度传感器 | 识别 flash/torch/LED 专用传感器名称；多个传感器不明确时停止自动选择，不使用 CPU 温度代替 |
-| MTK / 其他接口 | 收集 flashlight、厂商 proc 和 V4L2 节点路径；未知 ioctl 与写入协议仅报告 |
-| 启动和 OTA | 每次启动重新检测，原厂电流变化后停止套用旧校准 |
-| 操作页面 | 展示状态、候选路径、亮度范围和未启用原因；检测不会点亮手电筒 |
+| API 最高档 | Android 13 及以上读取系统声明的最高强度，调用原生接口并回读强度 |
+| 驱动读数 | 对每个候选连续采样，记录关灯、低档、最高档、再次关灯时的亮度与 strobe |
+| 通道识别 | 同时观察所有有效的 LED class 节点，包括没有 torch/flash 名称的节点 |
+| 多通道 | 同时响应的多个 LED 作为一组报告，不任意挑选一个 |
+| 老版本系统 | 提供开关灯实测和默认档映射，最高档无法确定时明确留空 |
+| 接口隐藏 | Camera API 通过但驱动节点不可读时，报告 API 可用、观测接口未明确 |
+| 环境标记 | 记录 HAL 是否存在覆盖；升级时的读数属于当前运行环境，不作为原厂亮度 |
+| 超时和退出 | 正常路径关灯后退出，异常路径清理；程序和外层分别设有 10/12 秒截止时间 |
 
-**接口识别通过不等于电流和热设计已经校准。** `max_brightness` 是驱动亮度量程，不是安全持续电流参数；不能由它推导出所有手机都适合 500 mA。多候选、传感器缺失或电流映射未知时使用诊断模式，不运行增强守护进程。
+安装前请关闭手电筒并退出正在使用摄像头的应用。相机占用、手电筒已开启、温度过高、系统未启动完成或恢复环境安装时会跳过实测，并保留原因，不影响模块安装。
 
-## 已校准增强配置
+实测仅使用原生 Camera API 控制灯光，不通过写入未知 sysfs 或厂商 ioctl 试错。最高档阶段约持续半秒，整段测量通常约 2–3 秒。被终止的探测进程由 CameraService 回收其手电筒客户端令牌。
 
-当前仍只有 Xiaomi `pudding` 的历史实机校准：匹配原厂 150 mA / 255 量程 / `yellow:flash-0` / `flash_therm` 以及 PowerKeeper 接口后，保持 500 mA HAL 上限、80°C 降至 76、75°C 恢复的策略。其他机型可安装并生成报告，尚不能据此宣称亮度增强已验证。
+## 三个数值的区别
 
-增强档会增加 LED 发热，历史高温测试不能代替长期寿命测试；内核和 PMIC 的最终保护保持不变。模块不写 `flash_brightness`，不强制 `flash_strobe=1`，不会在驱动关灯后重新点亮。专用传感器失联时降低增强亮度、恢复原厂热策略并取消旧亮度恢复目标。
+- Camera API 最高强度：系统当前允许原生接口请求的档位。
+- 实测驱动值：在该档位下观察到的稳定 LED 读数。
+- max_brightness：驱动声明的量程，不能直接作为持续电流或安全增强目标。
 
-本版通过 36 项回归测试，并在 pudding / Android 17 上完成 Magisk 安装、启动挂载、ARM64 程序接口检查和热切换测试。通过系统 Camera API 短时点亮，最高档连续五次采样均为 brightness=255、strobe=1，关灯后均恢复为 0；PowerKeeper 私有挂载在开灯后建立、关灯后移除。降档、回滞、降温恢复、传感器失联和取消旧目标已用手机上的临时文件验证，不代表实物高温测试。
+低档可能因驱动量化显示为零，或只点亮其中一个色温通道。探测会结合整个开关灯序列判断；最高档不稳定、读数越界、多个通道同时响应或关灯未确认时，不生成单通道映射。
 
-实机检测还修复了 Android Shell 的 LINES 特殊变量冲突，以及多通道 LED 的校准选择；运行脚本会将模块目录转换为绝对路径。本轮 pudding 实机发布验证已完成，多机型和长期点亮仍需进一步验证。旧版实机记录见 [英文文档](README_EN.md#historical-device-results)。
+实测映射绑定机型、SoC、系统构建指纹和接口拓扑。每次开机重新校验，OTA 或接口变化后旧结果不再用于选择通道。开机和 Magisk 操作页仅做只读检查，不会自动点灯；操作页会展示安装历史实测及当前结果能否复用。
 
-## 安装和查看报告
+## 兼容范围
 
-1. 在 Magisk 安装 ZIP 并重启，不需要 LSPosed 或 Zygisk。
-2. 查看模块状态并点击“操作”，确认是增强配置还是仅诊断模式；诊断模式不改变原厂亮度。
-3. 禁用或卸载后重启，恢复原厂 HAL 配置，不要叠加修改同一 Camera HAL 参数的模块。
+原生 API 测量与观测接口识别不限制机型，也不要求使用 CamX；具体能回读哪些节点取决于 ROM 和驱动。
 
-也可以使用 Root shell 执行只读检测：
+**通道读数跟随原生手电筒变化，说明它是经过实测的观测接口，不代表已经验证直接写入该节点的增强方式。** 已知增强校准仍只有 pudding / SM8850：500 mA HAL 上限、80°C 降至约 76、75°C 恢复。其他设备即使测得最高档和照明通道，仍保留原厂电流及温控，等待对应硬件的电流与温控校准。
+
+模块保留内核与 PMIC 最终保护，不写 flash_brightness，不强制重新点亮被驱动关闭的灯；增强档增加发热，短时实测不能替代长期寿命验证。
+
+## 安装与重新检测
+
+1. 在 Magisk 安装开发版 ZIP，留意安装器的短时点灯提示和测量结果，然后正常重启。
+2. 进入模块“操作”查看状态、Camera API 最高档、实测驱动值、通道与测量环境。
+3. 需要回退时禁用或卸载后重启，恢复原厂 HAL 配置。
+
+可以建立 /data/adb/hyperos_torch_255/skip_native_probe 文件跳过安装点灯。安装脚本也识别 HYPERTORCH_SKIP_NATIVE_PROBE=1。
+
+需要主动重测时，在 Root shell 执行：
+
+```sh
+sh /data/adb/modules/hyperos_torch_255/native-probe.sh --output /data/adb/modules/hyperos_torch_255/.native-capabilities
+```
+
+只读检查仍使用：
 
 ```sh
 sh /data/adb/modules/hyperos_torch_255/probe.sh
 ```
 
-报告只包含机型、SoC 和接口能力，不读取设备序列号、账户、照片或应用数据。新增机型应根据报告核实实际照明节点、持续电流映射和温度传感器，再添加校准配置；不能只增加代号白名单。
+报告包含机型、SoC、系统构建和接口读数，不读取序列号、账号、照片或应用数据。
 
-## 开发与验证
+## 验证
 
-- `lib/discovery.sh`、`probe.sh`：共享接口探测与 TSV 报告。
-- `customize.sh`：安装时检测，不再只允许单个机型安装。
-- `post-fs-data.sh`：启动重检、原厂配置校验和 systemless 挂载。
-- `service.sh`、`src/thermal_governor.c`：使用检测路径启动温控，参数独立校验，失联时回退。
-- `action.sh`：Magisk 操作页只读报告。
-- `tests/test_compatibility.py`：模拟不同硬件接口，并运行真实 C 温控状态机。
+开发版已完成 Python 安装/缓存/超时/退出流程测试、真实 C 温控状态机测试和纯 Java 通道关联测试，Android Java 与 DEX 已构建。当前手机插件连接异常、ADB 无在线设备，本版安装探测尚未实机验收；v1.6.0 的历史实测不能替代新版主动探测的实机测试。
 
-```sh
-python3 -m unittest discover -s tests -v
-```
+CI 从源码重新构建 ARM64 温控程序与原生探测 DEX，打包包含所有运行脚本。
 
-原理参考：[Linux LED class](https://docs.kernel.org/leds/leds-class.html)、[Linux Flash LED class](https://docs.kernel.org/leds/leds-class-flash.html)。
+参考：[Android CameraManager](https://developer.android.com/reference/android/hardware/camera2/CameraManager)、[Linux LED class](https://docs.kernel.org/leds/leds-class.html)。
 
