@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Validate scripts and compatibility behavior
@@ -17,6 +17,8 @@ jobs:
           set -euo pipefail
           for f in *.sh lib/*.sh; do sh -n "$f"; done
           python3 -m unittest discover -s tests -v
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
       - name: Build Android ARM64 governor from source
         run: |
           set -euo pipefail
