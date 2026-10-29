@@ -1,0 +1,6 @@
+__pycache__/
+*.zip
+.test-build/
+.*-capabilities
+.status
+.hal-ready

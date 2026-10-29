@@ -1,53 +1,62 @@
-name: Publish Torch 255 capability module
+name: Validate and package Torch 255
 on:
   push:
-    branches: [main]
-    paths: ['module.prop', 'customize.sh', 'post-fs-data.sh', 'service.sh', '.github/workflows/publish.yml']
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate required actual HAL interfaces and scripts
+      - name: Validate scripts and compatibility behavior
         run: |
           set -euo pipefail
-          for f in customize.sh post-fs-data.sh service.sh uninstall.sh; do sh -n "$f"; done
-          ! grep -E 'ro\.build\.version\.(sdk|incremental)' customize.sh post-fs-data.sh service.sh
-          grep -q 'flash_therm' customize.sh
-          grep -q 'overrideFlashTorchCurrent' customize.sh
-          grep -q 'FlashTorchCurrentSwitch=TRUE' customize.sh
-          grep -q 'max_brightness' customize.sh
-          grep -q 'com.miui.powerkeeper' customize.sh
-          test -s bin/thermal_governor
+          for f in *.sh lib/*.sh; do sh -n "$f"; done
+          python3 -m unittest discover -s tests -v
+      - name: Build Android ARM64 governor from source
+        run: |
+          set -euo pipefail
+          NDK="$ANDROID_HOME/ndk/27.0.12077973"
+          if [ ! -d "$NDK" ]; then sdkmanager 'ndk;27.0.12077973'; fi
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang" \
+            -Wall -Wextra -Werror -O2 -fPIE -pie src/thermal_governor.c -llog -o bin/thermal_governor
           file bin/thermal_governor
-          grep -q '^version=1.5.1$' module.prop
       - name: Package ZIP
         run: |
           set -euo pipefail
-          zip -q -9 -r HyperOS-Torch-255-v1.5.1.zip module.prop customize.sh post-fs-data.sh service.sh uninstall.sh sepolicy.rule bin/thermal_governor
-          unzip -t HyperOS-Torch-255-v1.5.1.zip
-          sha256sum HyperOS-Torch-255-v1.5.1.zip
+          VERSION="$(awk -F= '$1=="version" {print $2}' module.prop)"
+          PACKAGE="HyperOS-Torch-255-v${VERSION}.zip"
+          chmod 0755 *.sh bin/thermal_governor
+          zip -q -9 -r "$PACKAGE" module.prop customize.sh post-fs-data.sh service.sh \
+            uninstall.sh action.sh probe.sh lib sepolicy.rule bin/thermal_governor
+          unzip -t "$PACKAGE"
+          sha256sum "$PACKAGE" > "$PACKAGE.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: torch-255-capability
-          path: HyperOS-Torch-255-v1.5.1.zip
-      - name: Publish release
+          path: |
+            HyperOS-Torch-255-*.zip
+            HyperOS-Torch-255-*.zip.sha256
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: torch-255-capability
+      - name: Publish tagged prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if gh release view v1.5.1 >/dev/null 2>&1; then
-            echo 'Release v1.5.1 exists; refusing replacement'
-            exit 0
-          fi
-          HASH="$(sha256sum HyperOS-Torch-255-v1.5.1.zip | awk '{print $1}')"
-          {
-            echo 'v1.5.1 replaces the Android SDK floor with real Camera HAL/LED flash/flash_therm/temp_state/PowerKeeper interface checks.'
-            echo 'Still restricted to the calibrated pudding hardware for 500mA current and thermal thresholds.'
-            echo 'Native governor remains the same as v1.5.0. No guarantee for untested future OEM changes; no kernel protection removal.'
-            echo "ZIP SHA256: $HASH"
-          } > notes.txt
-          gh release create v1.5.1 HyperOS-Torch-255-v1.5.1.zip --target "$GITHUB_SHA" --title 'HyperOS Torch 255 v1.5.1' --notes-file notes.txt --prerelease
+          gh release create "$RELEASE_TAG" HyperOS-Torch-255-*.zip HyperOS-Torch-255-*.sha256 \
+            --target "$GITHUB_SHA" --title "HyperOS Torch 255 $RELEASE_TAG" --generate-notes --prerelease

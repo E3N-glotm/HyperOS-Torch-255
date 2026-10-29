@@ -81,7 +81,10 @@ static bool write_int(const char *path, int value) {
     }
     struct stat st;
     if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
-        (void)ftruncate(fd, 0);
+        if (ftruncate(fd, 0) != 0 && errno != EINVAL && errno != EPERM && errno != EACCES) {
+            close(fd);
+            return false;
+        }
         (void)lseek(fd, 0, SEEK_SET);
     }
     char buf[32];
@@ -144,6 +147,12 @@ static bool run_mount_namespace_action(pid_t pid,
         int n = snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/mnt", pid);
         if (n <= 0 || (size_t)n >= sizeof(ns_path)) {
             _exit(100);
+        }
+        // Never install a proxy in PID 1's shared namespace.
+        struct stat target_ns, init_ns;
+        if (stat(ns_path, &target_ns) != 0 || stat("/proc/1/ns/mnt", &init_ns) != 0 ||
+            (target_ns.st_dev == init_ns.st_dev && target_ns.st_ino == init_ns.st_ino)) {
+            _exit(105);
         }
         int ns_fd = open(ns_path, O_RDONLY | O_CLOEXEC);
         if (ns_fd < 0) {
@@ -253,7 +262,18 @@ static void sleep_ms(int ms) {
     usleep((useconds_t)ms * 1000U);
 }
 
-int main(void) {
+static bool env_int(const char *name, int fallback, int low, int high, int *out) {
+    const char *value = getenv(name);
+    if (value == NULL || *value == '\0') { *out = fallback; return true; }
+    char *end = NULL;
+    errno = 0;
+    long n = strtol(value, &end, 10);
+    if (errno || end == value || *end || n < low || n > high) return false;
+    *out = (int)n;
+    return true;
+}
+
+int main(int argc, char **argv) {
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
     signal(SIGHUP, on_signal);
@@ -271,6 +291,25 @@ int main(void) {
     const bool powerkeeper_mask_enabled =
             !(disable_mask_value != NULL && strcmp(disable_mask_value, "1") == 0);
     const int poll_ms = parse_poll_ms();
+    int stock_brightness, max_brightness, trip_on_mc, trip_off_mc;
+    if (!env_int("HYPERTORCH_MAX_BRIGHTNESS", 255, 1, 1000000, &max_brightness) ||
+        !env_int("HYPERTORCH_STOCK_BRIGHTNESS", STOCK_BRIGHTNESS, 1, max_brightness, &stock_brightness) ||
+        !env_int("HYPERTORCH_TRIP_ON_MC", TRIP_ON_MC, 1000, 120000, &trip_on_mc) ||
+        !env_int("HYPERTORCH_TRIP_OFF_MC", TRIP_OFF_MC, 0, 120000, &trip_off_mc) ||
+        trip_off_mc >= trip_on_mc) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "invalid calibration parameters");
+        return 2;
+    }
+    if (argc > 1) {
+        char thermal[MAX_PATH_LEN];
+        int temp, brightness, strobe;
+        if (argc != 2 || strcmp(argv[1], "--check") != 0) return 2;
+        return find_flash_thermal(thermal, sizeof(thermal)) &&
+            read_int(thermal, &temp) && temp >= 1000 && temp <= 200000 &&
+            read_int(brightness_path, &brightness) && brightness >= 0 && brightness <= max_brightness &&
+            read_int(strobe_path, &strobe) && strobe >= 0 && strobe <= 1 ? 0 : 2;
+    }
+
 
     if (powerkeeper_mask_enabled && (temp_state_proxy == NULL || temp_state_proxy[0] == '\0')) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
@@ -294,8 +333,8 @@ int main(void) {
 
         if (!announced_ready) {
             __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                                "thermal governor ready: 80C clamp / 75C release, stock=%d, poll=%dms, thermal=%s",
-                                STOCK_BRIGHTNESS, poll_ms, thermal_path);
+                                "thermal governor ready: clamp=%d release=%d mC, stock=%d, poll=%dms, thermal=%s",
+                                trip_on_mc, trip_off_mc, stock_brightness, poll_ms, thermal_path);
             announced_ready = true;
         }
 
@@ -303,18 +342,36 @@ int main(void) {
         int strobe = 0;
         int brightness = 0;
         int raw_temp_state = 0;
-        if (!read_int(thermal_path, &temp_mc)) {
+        if (!read_int(thermal_path, &temp_mc) || temp_mc < 1000 || temp_mc > 200000) {
+            // Lost sensor: stop bypassing OEM thermal policy and discard any restore target.
+            int fail_strobe = 0, fail_brightness = 0;
+            if (read_int(strobe_path, &fail_strobe) && fail_strobe == 1 &&
+                read_int(brightness_path, &fail_brightness) && fail_brightness > stock_brightness) {
+                (void)write_int(brightness_path, stock_brightness);
+            }
+            if (masked_powerkeeper_pid > 0 &&
+                unmount_powerkeeper_filter(masked_powerkeeper_pid, powerkeeper_target_path)) {
+                masked_powerkeeper_pid = 0;
+            }
+            saved_target = 0;
+            throttled = false;
             thermal_path[0] = '\0';
             announced_ready = false;
             sleep_ms(1000);
             continue;
         }
         if (!read_int(strobe_path, &strobe) || !read_int(brightness_path, &brightness)) {
+            if (masked_powerkeeper_pid > 0 &&
+                unmount_powerkeeper_filter(masked_powerkeeper_pid, powerkeeper_target_path)) {
+                masked_powerkeeper_pid = 0;
+            }
+            throttled = false;
+            saved_target = 0;
             sleep_ms(poll_ms);
             continue;
         }
 
-        const bool torch_active = strobe > 0 && brightness > 0;
+        const bool torch_active = strobe == 1 && brightness > 0 && brightness <= max_brightness;
 
         if (powerkeeper_mask_enabled) {
             if (masked_powerkeeper_pid > 0 &&
@@ -323,11 +380,14 @@ int main(void) {
             }
 
             if (torch_active) {
-                if (read_int(temp_state_path, &raw_temp_state)) {
+                bool proxy_ready = false;
+                if (read_int(temp_state_path, &raw_temp_state) && raw_temp_state >= 0) {
                     const int filtered_state = filter_torch_state_digit(raw_temp_state);
+                    proxy_ready = filtered_state == last_proxy_value;
                     if (filtered_state != last_proxy_value) {
                         if (write_int(temp_state_proxy, filtered_state)) {
                             last_proxy_value = filtered_state;
+                            proxy_ready = true;
                         } else {
                             __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
                                                 "cannot update PowerKeeper temp_state proxy: %s",
@@ -336,7 +396,11 @@ int main(void) {
                     }
                 }
 
-                if (masked_powerkeeper_pid == 0) {
+                if (!proxy_ready && masked_powerkeeper_pid > 0) {
+                    if (unmount_powerkeeper_filter(masked_powerkeeper_pid, powerkeeper_target_path))
+                        masked_powerkeeper_pid = 0;
+                }
+                if (proxy_ready && masked_powerkeeper_pid == 0) {
                     if (mask_retry_ticks > 0) {
                         --mask_retry_ticks;
                     } else {
@@ -360,12 +424,12 @@ int main(void) {
                     __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
                                         "PowerKeeper torch thermal policy restored in pid=%d namespace",
                                         pid);
+                    masked_powerkeeper_pid = 0;
                 } else {
                     __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
                                         "PowerKeeper namespace filter unmount failed for pid=%d",
                                         pid);
                 }
-                masked_powerkeeper_pid = 0;
                 mask_retry_ticks = 0;
             }
         }
@@ -382,13 +446,13 @@ int main(void) {
         }
 
         if (!throttled) {
-            if (temp_mc >= TRIP_ON_MC && brightness > STOCK_BRIGHTNESS) {
+            if (temp_mc >= trip_on_mc && brightness > stock_brightness) {
                 saved_target = brightness;
-                if (write_int(brightness_path, STOCK_BRIGHTNESS)) {
+                if (write_int(brightness_path, stock_brightness)) {
                     throttled = true;
                     __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
                                         "thermal throttle ON: temp=%d mC target=%d -> %d",
-                                        temp_mc, saved_target, STOCK_BRIGHTNESS);
+                                        temp_mc, saved_target, stock_brightness);
                 } else {
                     __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
                                         "thermal clamp write failed at temp=%d mC: %s",
@@ -399,24 +463,24 @@ int main(void) {
             continue;
         }
 
-        if (brightness > STOCK_BRIGHTNESS) {
+        if (brightness > stock_brightness) {
             // HAL/SystemUI may receive a new slider target while hot. Remember the newest enhanced
             // target, then clamp it again. This is the only steady-state write path.
             saved_target = brightness;
-            if (!write_int(brightness_path, STOCK_BRIGHTNESS)) {
+            if (!write_int(brightness_path, stock_brightness)) {
                 __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
                                     "thermal re-clamp write failed at temp=%d mC: %s",
                                     temp_mc, strerror(errno));
             }
-        } else if (brightness < STOCK_BRIGHTNESS) {
+        } else if (brightness < stock_brightness) {
             // If the user deliberately moves below the stock ceiling while throttled, do not
             // restore the earlier high value when the device cools.
             saved_target = brightness;
         }
 
-        if (temp_mc <= TRIP_OFF_MC) {
+        if (temp_mc <= trip_off_mc) {
             int restore = saved_target;
-            if (restore > STOCK_BRIGHTNESS) {
+            if (restore > stock_brightness) {
                 int current_strobe = 0;
                 if (read_int(strobe_path, &current_strobe) && current_strobe > 0) {
                     if (!write_int(brightness_path, restore)) {
@@ -444,3 +508,4 @@ int main(void) {
 
     return 0;
 }
+

@@ -2,6 +2,18 @@
 
 MODDIR=${0%/*}
 BIN="$MODDIR/bin/thermal_governor"
+. "$MODDIR/lib/discovery.sh"
+REPORT="$MODDIR/.runtime-capabilities"
+[ -r "$REPORT" ] && [ "$(ht_field "$REPORT" mode)" = calibrated ] || exit 0
+[ "$(cat "$MODDIR/.hal-ready" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id)" ] || exit 1
+export HYPERTORCH_BRIGHTNESS_PATH="$(ht_field "$REPORT" led)/brightness"
+export HYPERTORCH_STROBE_PATH="$(ht_field "$REPORT" strobe)"
+export HYPERTORCH_THERMAL_PATH="$(ht_field "$REPORT" thermal)"
+export HYPERTORCH_STOCK_BRIGHTNESS="$(ht_field "$REPORT" stock_brightness)"
+export HYPERTORCH_MAX_BRIGHTNESS="$(ht_field "$REPORT" max_brightness)"
+export HYPERTORCH_TRIP_ON_MC="$(ht_field "$REPORT" trip_on_mc)"
+export HYPERTORCH_TRIP_OFF_MC="$(ht_field "$REPORT" trip_off_mc)"
+"$BIN" --check || { ht_status "$MODDIR" "温控接口检查失败"; exit 1; }
 PROXY="$MODDIR/.temp_state.filtered"
 TEMP_STATE=/sys/class/thermal/thermal_message/temp_state
 TEMP_STATE_CANON=/sys/devices/virtual/thermal/thermal_message/temp_state
@@ -61,8 +73,13 @@ export HYPERTORCH_TEMP_STATE_PROXY="$PROXY"
 # Do not exec the daemon: this wrapper is the fail-safe cleanup owner. If the native process exits
 # unexpectedly, its PowerKeeper-only bind mount is removed before any restart is attempted.
 while [ ! -e "$STOPFILE" ] && [ ! -e "$MODDIR/disable" ] && [ ! -e "$MODDIR/remove" ]; do
-  "$BIN"
+  ht_status "$MODDIR" "增强配置已加载 | 温控监测中"
+  "$BIN" &
+  CHILD=$!
+  trap 'kill -TERM "$CHILD" 2>/dev/null; wait "$CHILD"; cleanup_filter_mount; exit 0' TERM INT HUP
+  wait "$CHILD"
   RC=$?
+  ht_status "$MODDIR" "温控已停止 | 正在恢复"
   cleanup_filter_mount
   [ -e "$STOPFILE" ] && break
   [ -e "$MODDIR/disable" ] && break
@@ -75,3 +92,4 @@ cleanup_filter_mount
 rm -f "$PROXY" "$STOPFILE"
 log_i "service stopped; stock PowerKeeper temp_state view restored"
 exit 0
+
