@@ -1,6 +1,6 @@
 id=hyperos_torch_255
 name=HyperOS Control Center Torch 255
-version=1.6.0-alpha.2
-versionCode=16002
+version=1.6.0
+versionCode=16003
 author=E3N
 description=状态: 待重启检测 | 自动识别 LED、Camera HAL 与温度传感器，按校准结果启用功能。

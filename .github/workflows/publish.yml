@@ -50,15 +50,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: torch-255-capability
-      - name: Publish tagged prerelease
+      - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          RELEASE_ARGS=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            RELEASE_ARGS+=(--prerelease)
+          else
+            RELEASE_ARGS+=(--latest)
+          fi
+          NOTES="release-notes/$RELEASE_TAG.md"
+          if [[ -f "$NOTES" ]]; then
+            RELEASE_ARGS+=(--notes-file "$NOTES")
+          else
+            RELEASE_ARGS+=(--generate-notes)
+          fi
           gh release create "$RELEASE_TAG" HyperOS-Torch-255-*.zip HyperOS-Torch-255-*.sha256 \
-            --target "$GITHUB_SHA" --title "HyperOS Torch 255 $RELEASE_TAG" --generate-notes --prerelease
+            --target "$GITHUB_SHA" --title "HyperOS Torch 255 $RELEASE_TAG" "${RELEASE_ARGS[@]}"

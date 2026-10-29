@@ -2,7 +2,7 @@
 
 **Language: [简体中文](README.md) | English**
 
-Development version: **v1.6.0-alpha.2**. Installation is no longer restricted to a device codename. Read-only capability discovery is independent from high-output calibration: calibrated hardware can enable enhancement; other devices retain stock current and thermal policy and receive an actionable interface report.
+Stable version: **v1.6.0** · [Download latest](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest). Installation is no longer restricted to a device codename. Read-only capability discovery is independent from high-output calibration: calibrated hardware can enable enhancement; other devices retain stock current and thermal policy and receive an actionable interface report.
 
 ## Discovery and compatibility
 
@@ -22,7 +22,7 @@ The pudding profile requires the expected LED, 255 range, CamX keys and original
 
 Kernel thermal trips and PMIC shutdown remain unchanged. No `flash_brightness` writes and no forced `flash_strobe=1`. A driver-terminated session is never reasserted. Namespace filtering is refused if PowerKeeper shares PID 1's mount namespace.
 
-High output increases LED heat; historical tests are not lifetime validation. This revision passes 36 regression tests and was installed and hot-tested on pudding / Android 17. Five short Camera API maximum-strength samples read brightness=255 and strobe=1; both returned to zero after switch-off. The private PowerKeeper filter was mounted while on and removed after switch-off. Native hysteresis, sensor-loss and stale-target cancellation were also exercised using temporary files on the phone, without heating the physical LED to the trip threshold. Cold-boot, multi-device and long-duration validation remain pending.
+High output increases LED heat; historical tests are not lifetime validation. This revision passes 36 regression tests and was installed and hot-tested on pudding / Android 17. Five short Camera API maximum-strength samples read brightness=255 and strobe=1; both returned to zero after switch-off. The private PowerKeeper filter was mounted while on and removed after switch-off. Native hysteresis, sensor-loss and stale-target cancellation were also exercised using temporary files on the phone, without heating the physical LED to the trip threshold. The pudding release validation is complete; multi-device and long-duration validation remain pending.
 
 The device test fixed an Android Shell LINES-variable collision and resolves the calibrated pudding / SM8850 three-channel topology explicitly. Unknown multi-channel layouts remain ambiguous. Startup scripts canonicalize their module directory before entering another mount namespace.
 

@@ -2,7 +2,7 @@
 
 **语言：简体中文（当前） | [English](README_EN.md)**
 
-**开发版：v1.6.0-alpha.2**。保留 HyperOS 原生手电筒，按实际接口进行检测；安装不再按机型代号拒绝。已校准硬件启用增强，其他硬件保留原厂亮度和温控，并提供兼容性报告。
+**正式版：v1.6.0** · [下载最新版](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest)。保留 HyperOS 原生手电筒，按实际接口进行检测；安装不再按机型代号拒绝。已校准硬件启用增强，其他硬件保留原厂亮度和温控，并提供兼容性报告。
 
 ## 本版改动
 
@@ -27,7 +27,7 @@
 
 本版通过 36 项回归测试，并在 pudding / Android 17 上完成 Magisk 安装、启动挂载、ARM64 程序接口检查和热切换测试。通过系统 Camera API 短时点亮，最高档连续五次采样均为 brightness=255、strobe=1，关灯后均恢复为 0；PowerKeeper 私有挂载在开灯后建立、关灯后移除。降档、回滞、降温恢复、传感器失联和取消旧目标已用手机上的临时文件验证，不代表实物高温测试。
 
-实机检测还修复了 Android Shell 的 LINES 特殊变量冲突，以及多通道 LED 的校准选择；运行脚本会将模块目录转换为绝对路径。尚未完成本版重启后的冷启动、多机型和长期点亮验证。旧版实机记录见 [英文文档](README_EN.md#historical-device-results)。
+实机检测还修复了 Android Shell 的 LINES 特殊变量冲突，以及多通道 LED 的校准选择；运行脚本会将模块目录转换为绝对路径。本轮 pudding 实机发布验证已完成，多机型和长期点亮仍需进一步验证。旧版实机记录见 [英文文档](README_EN.md#historical-device-results)。
 
 ## 安装和查看报告
 
