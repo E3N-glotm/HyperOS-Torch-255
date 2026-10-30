@@ -67,7 +67,9 @@ sh /data/adb/modules/hyperos_torch_255/probe.sh
 
 ## 验证
 
-开发版已完成 Python 安装/缓存/超时/退出流程测试、真实 C 温控状态机测试和纯 Java 通道关联测试，Android Java 与 DEX 已构建。当前手机插件连接异常、ADB 无在线设备，本版安装探测尚未实机验收；v1.6.0 的历史实测不能替代新版主动探测的实机测试。
+开发版已通过 53 项 Python/C 状态机与安装流程测试、13 项 Java 通道关联检查，以及 Android Java、DEX 和 CI 打包。2026-10-30 在 pudding / Android 17 上完成主动探测和真实 Magisk 安装：API 最高档 100，对应驱动值 255；低档读数 6，关灯前后为 0。程序从 6 个 LED 节点中识别出 yellow:flash-0，并正确标记已有 HAL 覆盖的环境。
+
+手电筒已开启时保留原有灯光并跳过，用户禁用实测、缓存复用及构建失配拒绝也已检查。新安装仍待正常重启后的冷启动验收；其他机型、旧 Android 和长期点亮尚未实测。完整范围见[实机记录](tests/device-results/pudding_native_probe_20261030.md)。
 
 CI 从源码重新构建 ARM64 温控程序与原生探测 DEX，打包包含所有运行脚本。
 

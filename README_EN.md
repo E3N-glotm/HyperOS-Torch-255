@@ -36,7 +36,9 @@ The original probe.sh remains read-only. Reports contain device/SoC/build/interf
 
 ## Validation
 
-Python installer/cache/timeout/cancellation checks, native C state-machine tests and pure Java correlation tests are provided. Android Java and DEX builds pass. The phone connector currently fails and ADB has no online devices, so this revision's active installer probe has not been validated on physical hardware. Earlier v1.6.0 device tests are not validation of this new helper.
+The development version passes 53 Python/C state-machine and integration checks, 13 Java correlation checks, Android Java/DEX builds and CI packaging. On 2026-10-30, pudding / Android 17 passed the active probe and a real Magisk installation: API maximum 100 mapped to driver value 255, low level read 6, and off readings returned to zero. The helper selected yellow:flash-0 from six LED nodes and correctly recorded the existing HAL overlay.
+
+An already-lit torch was preserved while the probe skipped; user opt-out, mapping reuse and firmware-mismatch rejection were also verified. The installation is staged and a normal reboot/cold-boot check remains pending. Other devices, older Android versions and long-duration operation have not been physically tested. See the [device test record](tests/device-results/pudding_native_probe_20261030.md) for scope.
 
 CI rebuilds both the ARM64 governor and Camera API DEX from source and includes them in the module ZIP.
 
