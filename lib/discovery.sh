@@ -15,20 +15,29 @@ ht_emit() {
 ht_discover() {
   DEVICE=$(getprop ro.product.device 2>/dev/null)
   SOC=$(getprop ro.soc.model 2>/dev/null)
+  FIRMWARE=$(getprop ro.build.fingerprint 2>/dev/null)
   ht_emit format 1
   ht_emit device "$DEVICE"
   ht_emit soc "$SOC"
+  ht_emit firmware "$FIRMWARE"
+  if awk '$5 ~ /\/camxoverridesettings\.txt$/ {found=1} END {exit !found}' "$HT_ROOT/proc/1/mountinfo" 2>/dev/null; then
+    ht_emit environment hal_overlay_present
+  else
+    ht_emit environment no_hal_overlay_detected
+  fi
 
   # Class symlinks are resolved to avoid treating aliases as separate LEDs.
   LED_COUNT=0; LED_SEEN='|'; LED_PATH=; LED_MAX=; LED_KIND=; STROBE=
   PROFILE_LED=; PROFILE_STROBE=; PROFILE_LED_UNEXPECTED=0
+  LED_TOPOLOGY_DATA=; CACHE_LED=; CACHE_KIND=; CACHE_MAX=; CACHE_STROBE=
+  NATIVE_HINT=$(ht_field "${HT_NATIVE_REPORT:-/dev/null}" native_selected_led 2>/dev/null)
   for LED in "$HT_ROOT"/sys/class/leds/*; do
     [ -d "$LED" ] || continue
     NAME=$(basename "$(ht_realpath "$LED")" | tr '[:upper:]' '[:lower:]')
     case "$NAME" in
       *torch*|*flashlight*) KIND=dedicated_torch ;;
       *flash*) KIND=flash_candidate ;;
-      *) continue ;;
+      *) KIND=unclassified_led ;;
     esac
     MAX=$(ht_read "$LED/max_brightness")
     VALUE=$(ht_read "$LED/brightness")
@@ -43,8 +52,13 @@ ht_discover() {
       [ "$KIND" = flash_candidate ] && KIND=shared_flash_torch
     fi
     ht_emit led_candidate "$LED|$KIND|max=$MAX|strobe=$S"
+    LED_TOPOLOGY_DATA="$LED_TOPOLOGY_DATA$CANON|$MAX|$KIND|$S
+"
+    if [ "$CANON" = "$NATIVE_HINT" ]; then
+      CACHE_LED="$CANON"; CACHE_KIND="$KIND"; CACHE_MAX="$MAX"; CACHE_STROBE="$S"
+    fi
     # A bare flash name may be an indicator or pulse-only device; do not select it.
-    [ "$KIND" = flash_candidate ] && continue
+    { [ "$KIND" = flash_candidate ] || [ "$KIND" = unclassified_led ]; } && continue
     LED_COUNT=$((LED_COUNT + 1))
     LED_PATH="$CANON"; LED_MAX="$MAX"; LED_KIND="$KIND"; STROBE="$S"
     # The validated device exposes three color channels. Its calibrated continuous
@@ -57,8 +71,27 @@ ht_discover() {
     esac
   done
   ht_emit led_count "$LED_COUNT"
+  LED_TOPOLOGY=$(printf '%s' "$LED_TOPOLOGY_DATA" | LC_ALL=C sort | sha256sum | awk '{print $1}')
+  ht_emit led_topology "$LED_TOPOLOGY"
   LED_SELECTED=0
-  if [ "$LED_COUNT" = 1 ]; then
+  NATIVE_CACHE_OK=0
+  if [ -n "$CACHE_LED" ] && [ -n "$FIRMWARE" ] && [ -n "$LED_TOPOLOGY" ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_format)" = 1 ] &&
+     { [ "$(ht_field "$HT_NATIVE_REPORT" native_status)" = mapped_maximum ] || [ "$(ht_field "$HT_NATIVE_REPORT" native_status)" = mapped_default ]; } &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_device)" = "$DEVICE" ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_soc)" = "$SOC" ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_firmware)" = "$FIRMWARE" ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_led_topology)" = "$LED_TOPOLOGY" ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_api_verified)" = 1 ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_off_verified)" = 1 ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_mapping_verified)" = 1 ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_channel_count)" = 1 ] &&
+     [ "$(ht_field "$HT_NATIVE_REPORT" native_driver_max)" = "$CACHE_MAX" ]; then
+    LED_SELECTED=1
+    NATIVE_CACHE_OK=1
+    LED_PATH="$CACHE_LED"; LED_KIND="$CACHE_KIND"; LED_MAX="$CACHE_MAX"; STROBE="$CACHE_STROBE"
+    ht_emit led_selection native_api_correlation
+  elif [ "$LED_COUNT" = 1 ]; then
     LED_SELECTED=1
     ht_emit led_selection unique_interface
   elif [ -n "$PROFILE_LED" ] && [ "$PROFILE_LED_UNEXPECTED" = 0 ]; then
@@ -72,6 +105,7 @@ ht_discover() {
     ht_emit max_brightness "$LED_MAX"
     ht_emit strobe "$STROBE"
   fi
+  ht_emit native_cache_usable "$NATIVE_CACHE_OK"
 
   # Scan bounded Camera HAL locations, including common multi-camera subdirectories.
   HAL_COUNT=0; HAL_SEEN='|'; HAL_PATH=; HAL_CURRENT=
@@ -178,5 +212,33 @@ ht_reason_zh() {
     hal_missing_or_ambiguous) printf 'HAL 接口缺失、无效或存在多个候选' ;;
     thermal_missing_or_ambiguous) printf '专用温度接口缺失、无效或存在多个候选' ;;
     *) printf '接口检测未完成' ;;
+  esac
+}
+
+ht_native_status_zh() {
+  case "$1" in
+    mapped_maximum) printf '最高档与单通道已实测' ;;
+    mapped_default) printf '默认档与单通道已实测（最高档未确定）' ;;
+    multi_channel) printf '原生接口可用，多个通道共同响应' ;;
+    api_only) printf '原生接口可用，驱动观测通道未明确' ;;
+    skipped) printf '已跳过主动实测' ;;
+    *) printf '尚无实测结果' ;;
+  esac
+}
+
+ht_native_reason_zh() {
+  case "$1" in
+    single_correlated_led) printf '已确认开关灯响应' ;;
+    multiple_leds_respond_together) printf '按通道组报告' ;;
+    no_readable_correlated_led) printf '未找到稳定响应的可读驱动节点' ;;
+    user_disabled) printf '用户关闭了安装点灯检测' ;;
+    recovery_install) printf '恢复环境不进行点灯检测' ;;
+    system_not_ready) printf '系统尚未启动完成' ;;
+    helper_unavailable) printf '缺少探测程序' ;;
+    app_process_unavailable) printf '系统无法运行探测程序' ;;
+    probe_timeout) printf '探测超时，已终止探测进程' ;;
+    *camera_busy*|*torch_off_unconfirmed*|*torch_already_on*|*led_already_on*) printf '相机或手电筒正在使用，保留当前状态' ;;
+    *temperature_high*) printf '当前温度较高，已跳过' ;;
+    *) printf '%s' "$1" ;;
   esac
 }

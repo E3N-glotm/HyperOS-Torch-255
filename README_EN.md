@@ -2,65 +2,45 @@
 
 **Language: [简体中文](README.md) | English**
 
-Stable version: **v1.6.0** · [Download latest](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest). Installation is no longer restricted to a device codename. Read-only capability discovery is independent from high-output calibration: calibrated hardware can enable enhancement; other devices retain stock current and thermal policy and receive an actionable interface report.
+Development version: **v1.7.0-alpha.1**. The installer measures the current native torch through CameraManager and correlates read-only LED samples across off / low / maximum / off stages. The [stable v1.6.0 release](https://github.com/E3N-glotm/HyperOS-Torch-255/releases/latest) is unchanged.
 
-## Discovery and compatibility
+## Installer measurement
 
-- Enumerates LED class nodes, recognizes dedicated torch/flashlight LEDs and shared flash/torch nodes with a strobe interface, and resolves duplicate symlinks.
-- Reads each driver's `max_brightness`; 255 is not assumed for other devices.
-- Inspects CamX files in odm/vendor/product/system vendor and odm directories, including two subdirectory levels; validates unique current keys and enabled OEM switches.
-- Identifies flash/torch/LED thermal sensors. Ambiguous sensors are reported instead of substituting a CPU sensor.
-- Inventories vendor flashlight, proc and V4L2 paths without guessing ioctls or writing unknown controls.
-- Rechecks on each boot/OTA. Changed OEM current values invalidate the old calibration.
-- The Magisk action displays candidates, ranges and fallback reasons without turning on the torch.
+The installer scans interfaces and runs an included DEX helper without installing an APK or using LSPosed/Zygisk. Android 13+ devices with strength control report the API maximum and verify the requested level. Older systems measure on/off and default strength only; an unknown maximum remains empty.
 
-Only the historical Xiaomi `pudding` profile is calibrated for enhanced output. Other devices can install and diagnose, but increased brightness is **not** claimed to be validated. An LED brightness range does not reveal safe sustained current; the module does not apply the pudding 500 mA value to unknown hardware.
+Every valid LED class node is observed, including unnamed nodes. Each stage takes three samples. Multiple responding emitters remain a group rather than selecting the first. Zero at the lowest level is permitted for quantization or color-channel switching. Unstable maximum values, invalid ranges, or unconfirmed switch-off do not create a single-channel mapping. If the OEM hides driver nodes, the helper can still report native API success without claiming a readable LED interface.
 
-## Calibrated profile
+The helper only controls light through CameraManager; it never writes unknown sysfs nodes or vendor ioctls. Maximum-strength sampling lasts about half a second, with a typical total sequence of 2–3 seconds. Camera busy, torch already on, excessive temperature, incomplete boot, and recovery installs skip the measurement with a reason. The helper has a 10-second hard deadline and the wrapper a 12-second deadline. Normal and exceptional paths close the owned torch session; CameraService reclaims the client's torch token when the helper dies.
 
-The pudding profile requires the expected LED, 255 range, CamX keys and original 150 mA current, flash_therm and PowerKeeper capabilities. It retains a 500 mA HAL override and an 80°C/75°C hysteresis governor with a stock clamp at 76. Temperature sensor failure clamps enhanced output, removes the private PowerKeeper policy filter and cancels the pending restoration target. Unreadable LED state and failed thermal-state proxy updates restore OEM policy as well.
+## Meaning and reuse
 
-Kernel thermal trips and PMIC shutdown remain unchanged. No `flash_brightness` writes and no forced `flash_strobe=1`. A driver-terminated session is never reasserted. Namespace filtering is refused if PowerKeeper shares PID 1's mount namespace.
+API maximum, observed LED value, and driver max_brightness are different quantities. They do not establish a safe continuous current. Existing HAL overlays are recorded, so readings taken while upgrading an enhanced device are not called pristine stock measurements.
 
-High output increases LED heat; historical tests are not lifetime validation. This revision passes 36 regression tests and was installed and hot-tested on pudding / Android 17. Five short Camera API maximum-strength samples read brightness=255 and strobe=1; both returned to zero after switch-off. The private PowerKeeper filter was mounted while on and removed after switch-off. Native hysteresis, sensor-loss and stale-target cancellation were also exercised using temporary files on the phone, without heating the physical LED to the trip threshold. The pudding release validation is complete; multi-device and long-duration validation remain pending.
+A measured mapping is bound to device, SoC, firmware fingerprint and LED topology. Boot performs read-only revalidation; changed firmware or interfaces invalidate the cached selection. Boot and the Action page never initiate an active light test. Action shows historical measurements and whether the mapping is currently reusable.
 
-The device test fixed an Android Shell LINES-variable collision and resolves the calibrated pudding / SM8850 three-channel topology explicitly. Unknown multi-channel layouts remain ambiguous. Startup scripts canonicalize their module directory before entering another mount namespace.
+A correlated node is a verified observer, not proof that direct sysfs writes are a supported enhancement protocol. Native measurements have no device allowlist and do not require CamX. Enhanced current remains limited to the calibrated pudding / SM8850 profile: 500 mA HAL ceiling, 80/75°C hysteresis and a stock-like clamp of 76. Other hardware retains OEM current and thermal policy pending calibration.
 
-## Installation
+Kernel/PMIC final protections remain. No flash_brightness writes and no forced re-light after driver shutdown. High output increases heat; a short probe is not lifetime validation.
 
-Install the module ZIP with Magisk and reboot. Open its Action page to inspect the capability report. Diagnostic mode preserves stock behavior and starts no enhancement daemon. Disable/uninstall and reboot to restore stock HAL configuration. Do not stack modules altering the same Camera HAL file.
+## Installation and manual checks
 
-Read-only CLI:
+Install the development ZIP in Magisk, review the short-light-test notice and result, then reboot. Open Action to inspect the API strength, observed driver range, responding channels and environment. Disable/uninstall and reboot to restore stock HAL configuration.
+
+Create /data/adb/hyperos_torch_255/skip_native_probe to skip installer light tests, or set HYPERTORCH_SKIP_NATIVE_PROBE=1 in the installer environment. To actively repeat the test from a Root shell:
 
 ```sh
-sh /data/adb/modules/hyperos_torch_255/probe.sh
+sh /data/adb/modules/hyperos_torch_255/native-probe.sh --output /data/adb/modules/hyperos_torch_255/.native-capabilities
 ```
 
-Reports contain device codename, SoC and interface paths, not serial numbers, account data, images or application data. Supporting another enhanced-output profile requires verifying the actual continuous-light channel, current mapping and temperature behavior, rather than adding a codename allowlist.
+The original probe.sh remains read-only. Reports contain device/SoC/build/interface measurements, not serial numbers or personal application data.
 
-## Historical device results
+## Validation
 
-The earlier **v1.5.0**, not this revision, was tested on Xiaomi 17 (`pudding`):
+The development version passes 53 Python/C state-machine and integration checks, 13 Java correlation checks, Android Java/DEX builds and CI packaging. On 2026-10-30, pudding / Android 17 passed the active probe and a real Magisk installation: API maximum 100 mapped to driver value 255, low level read 6, and off readings returned to zero. The helper selected yellow:flash-0 from six LED nodes and correctly recorded the existing HAL overlay.
 
-| HAL torch current | Observed brightness |
-| ---: | ---: |
-| 150 mA | 76 |
-| 250 mA | 127 |
-| 350 mA | 178 |
-| 450 mA | 229 |
-| 500 mA | 255 |
+An already-lit torch was preserved while the probe skipped; user opt-out, mapping reuse and firmware-mismatch rejection were also verified. The installation is staged and a normal reboot/cold-boot check remains pending. Other devices, older Android versions and long-duration operation have not been physically tested. See the [device test record](tests/device-results/pudding_native_probe_20261030.md) for scope.
 
-The earlier device tests covered the native slider reaching 255, an 80.006°C clamp to 76, restoration near 74.9°C, and uninstall/reboot/stock/reinstall rollback. They are historical results and do not validate this revision on other hardware.
+CI rebuilds both the ARM64 governor and Camera API DEX from source and includes them in the module ZIP.
 
-The optional RootTorch-v1.0.2 APK from older releases is unchanged. It is not required by the Magisk module and its APK behavior is outside this compatibility change.
-
-## Tests and implementation
-
-```sh
-python3 -m unittest discover -s tests -v
-```
-
-`lib/discovery.sh` and `probe.sh` implement read-only discovery. The boot manifest is separate from action-page reports, so diagnostic actions cannot change the active configuration. `thermal_governor.c` accepts validated paths/ranges/thresholds and provides a read-only `--check` preflight. CI compiles the native binary from source and packages all scripts.
-
-Interface references: [Linux LED class](https://docs.kernel.org/leds/leds-class.html) and [Linux Flash LED class](https://docs.kernel.org/leds/leds-class-flash.html).
+References: [CameraManager](https://developer.android.com/reference/android/hardware/camera2/CameraManager), [Linux LED class](https://docs.kernel.org/leds/leds-class.html).
 

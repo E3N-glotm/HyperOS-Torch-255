@@ -19,7 +19,7 @@ class Discovery(unittest.TestCase):
         self.device = 'pudding'
         self.pk = True
         self.boot_completed = True
-        self.stub('getprop', 'case "$1" in ro.product.device) echo "${TEST_DEVICE}" ;; ro.soc.model) echo SM8850 ;; sys.boot_completed) echo "${TEST_BOOT}" ;; esac')
+        self.stub('getprop', 'case "$1" in ro.product.device) echo "${TEST_DEVICE}" ;; ro.soc.model) echo SM8850 ;; ro.build.fingerprint) echo fixture/build/1 ;; sys.boot_completed) echo "${TEST_BOOT}" ;; esac')
         self.stub('pm', '[ "$TEST_PK" = 1 ] && echo package:/system/PowerKeeper.apk')
 
     def tearDown(self):
@@ -58,9 +58,9 @@ class Discovery(unittest.TestCase):
         self.sensor()
         self.put('sys/class/thermal/thermal_message/temp_state', 123)
 
-    def probe(self):
+    def probe(self, module=None):
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
-        result = subprocess.run(['sh', str(ROOT / 'probe.sh')], env={**os.environ,
+        result = subprocess.run(['sh', str((module or ROOT) / 'probe.sh')], env={**os.environ,
             'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
             'HYPERTORCH_TEST_ROOT': str(self.root), 'TEST_DEVICE': self.device,
             'TEST_PK': '1' if self.pk else '0', 'TEST_BOOT': '1' if self.boot_completed else '0'}, text=True, capture_output=True, check=True)
@@ -216,7 +216,7 @@ class Discovery(unittest.TestCase):
     def module_copy(self):
         mod = self.root / 'module'
         mod.mkdir()
-        for name in ['customize.sh', 'action.sh', 'probe.sh', 'module.prop', 'lib/discovery.sh']:
+        for name in ['customize.sh', 'action.sh', 'probe.sh', 'native-probe.sh', 'post-fs-data.sh', 'module.prop', 'lib/discovery.sh']:
             dest = mod / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, dest)
@@ -257,6 +257,183 @@ class Discovery(unittest.TestCase):
         self.assertEqual(list(mod.glob('.probe-report.*')), [])
 
 
+
+class NativeProbeFlow(unittest.TestCase):
+    def setUp(self):
+        self.fixture = Discovery(methodName='test_calibrated_device')
+        self.fixture.setUp()
+        self.d = self.fixture
+        self.d.full()
+        self.d.device = 'haotian'
+        self.mod = self.d.module_copy()
+        (self.mod / 'bin/torch_probe.dex').write_bytes(b'dex fixture')
+
+    def tearDown(self):
+        self.d.tearDown()
+
+    def env(self, **extra):
+        return {**os.environ, 'PATH': str(self.d.bin) + os.pathsep + os.environ['PATH'],
+                'HYPERTORCH_TEST_ROOT': str(self.d.root), 'TEST_DEVICE': self.d.device,
+                'TEST_PK': '1', 'TEST_BOOT': '1' if self.d.boot_completed else '0',
+                **extra}
+
+    def run_native(self, **extra):
+        report = self.mod / '.native-capabilities'
+        p = subprocess.run(['sh', str(self.mod / 'native-probe.sh'), '--output', str(report)],
+                           env=self.env(**extra), text=True, capture_output=True, timeout=18)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(self.mod.glob('.native-result.*')), [])
+        return dict(line.split('\t', 1) for line in report.read_text().splitlines())
+
+    def manifest(self, **changes):
+        d = self.d.probe(self.mod)
+        fields = {
+            'native_format': '1', 'native_status': 'mapped_maximum',
+            'native_device': self.d.device, 'native_soc': 'SM8850',
+            'native_firmware': 'fixture/build/1',
+            'native_led_topology': d['led_topology'],
+            'native_api_verified': '1', 'native_off_verified': '1',
+            'native_mapping_verified': '1', 'native_channel_count': '1',
+            'native_driver_max': '255',
+            'native_selected_led': str(self.d.root / 'sys/class/leds/yellow:flash-0'),
+        }
+        fields.update(changes)
+        (self.mod / '.native-capabilities').write_text(
+            ''.join(f'{k}\t{v}\n' for k, v in fields.items()))
+        return fields
+
+    def test_native_correlation_resolves_unknown_multichannel(self):
+        self.d.led('white:flash-1'); self.d.led('amber:flash-2')
+        self.manifest()
+        d = self.d.probe(self.mod)
+        self.assertEqual(d['led_selection'], 'native_api_correlation')
+        self.assertEqual(d['native_cache_usable'], '1')
+        self.assertEqual(d['mode'], 'diagnostic')
+        self.assertEqual(d['reason'], 'calibration_required')
+        self.assertNotIn('target_current_ma', d)
+
+    def test_correlated_unnamed_led_can_be_selected(self):
+        self.d.led('led0')
+        self.manifest(native_selected_led=str(self.d.root / 'sys/class/leds/led0'))
+        d = self.d.probe(self.mod)
+        self.assertTrue(d['led'].endswith('/led0'))
+        self.assertEqual(d['led_selection'], 'native_api_correlation')
+
+    def test_firmware_change_invalidates_measured_mapping(self):
+        self.d.led('white:flash-1')
+        self.manifest(native_firmware='different/build')
+        self.assertEqual(self.d.probe(self.mod)['native_cache_usable'], '0')
+
+    def test_new_led_changes_topology_and_invalidates_cache(self):
+        self.manifest()
+        self.d.led('red:indicator')
+        self.assertEqual(self.d.probe(self.mod)['native_cache_usable'], '0')
+
+    def test_missing_off_confirmation_cannot_select(self):
+        self.manifest(native_off_verified='0')
+        self.assertEqual(self.d.probe(self.mod)['native_cache_usable'], '0')
+
+    def test_group_of_two_channels_is_not_a_single_channel(self):
+        self.manifest(native_channel_count='2')
+        self.assertEqual(self.d.probe(self.mod)['native_cache_usable'], '0')
+
+    def test_changed_driver_range_invalidates_cache(self):
+        self.manifest(native_driver_max='1023')
+        self.assertEqual(self.d.probe(self.mod)['native_cache_usable'], '0')
+
+    def test_native_probe_user_disabled_does_not_launch_helper(self):
+        self.d.stub('app_process', 'echo CALLED > "$HYPERTORCH_TEST_ROOT/called"; exit 1')
+        d = self.run_native(HYPERTORCH_SKIP_NATIVE_PROBE='1')
+        self.assertEqual(d['native_reason'], 'user_disabled')
+        self.assertFalse((self.d.root / 'called').exists())
+
+    def test_recovery_install_does_not_launch_helper(self):
+        self.d.stub('app_process', 'exit 99')
+        self.assertEqual(self.run_native(BOOTMODE='false')['native_reason'], 'recovery_install')
+
+    def test_system_not_ready_skips_active_test(self):
+        self.d.boot_completed = False
+        self.assertEqual(self.run_native()['native_reason'], 'system_not_ready')
+
+    def test_java_busy_report_is_retained(self):
+        self.d.stub('app_process',
+                    'printf "native_format\\t1\\nnative_status\\tskipped\\nnative_reason\\tcamera_busy\\n" > "$4"; exit 1')
+        self.assertEqual(self.run_native()['native_reason'], 'camera_busy')
+
+    def test_helper_crash_produces_explicit_report(self):
+        self.d.stub('app_process', 'exit 9')
+        self.assertEqual(self.run_native()['native_reason'], 'helper_failed')
+
+    def test_readonly_action_never_runs_active_probe(self):
+        self.d.stub('app_process', 'echo CALLED > "$HYPERTORCH_TEST_ROOT/called"')
+        p = subprocess.run(['sh', str(self.mod / 'action.sh')], env=self.env(),
+                           text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0)
+        self.assertFalse((self.d.root / 'called').exists())
+
+    def test_unknown_measured_device_still_does_not_mount_hal(self):
+        self.manifest()
+        before = {p: p.read_bytes() for p in (self.d.root / 'sys').rglob('*') if p.is_file()}
+        p = subprocess.run(['sh', str(self.mod / 'post-fs-data.sh')], env=self.env(),
+                           text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertFalse((self.mod / '.hal-ready').exists())
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_installer_uses_measured_channel_before_calibration_gate(self):
+        self.d.led('white:flash-1')
+        led = self.d.root / 'sys/class/leds/yellow:flash-0'
+        helper = (
+            'awk -F "\\t" \x27$1=="device" || $1=="soc" || $1=="firmware" || $1=="led_topology" '
+            '{print "native_" $1 "\\t" $2}\x27 "$3" > "$4"\n'
+            'printf "native_format\\t1\\nnative_status\\tmapped_maximum\\nnative_reason\\tsingle_correlated_led\\n'
+            'native_api_verified\\t1\\nnative_off_verified\\t1\\nnative_mapping_verified\\t1\\n'
+            'native_channel_count\\t1\\nnative_driver_max\\t255\\nnative_api_max_strength\\t100\\n'
+            'native_observed_max\\t76\\nnative_selected_led\\t%s\\n" '
+            f'\x27{led}\x27 >> "$4"\n')
+        self.d.stub('app_process', helper)
+        command = (
+            'ui_print() { printf "%s\\n" "$*"; }; abort() { echo "$*"; exit 1; }; '
+            'set_perm() { :; }; set_perm_recursive() { :; }; . "$MODPATH/customize.sh"')
+        p = subprocess.run(['sh', '-c', command],
+                           env=self.env(MODPATH=str(self.mod), ARCH='arm64', BOOTMODE='true'),
+                           text=True, capture_output=True, timeout=5)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('实测驱动值: 76', p.stdout)
+        installed = (self.mod / '.install-capabilities').read_text()
+        self.assertIn('led_selection\tnative_api_correlation', installed)
+        self.assertIn('mode\tdiagnostic', installed)
+        self.assertFalse((self.mod / '.hal-ready').exists())
+
+    def test_cancelled_probe_kills_helper(self):
+        marker = self.d.root / 'helper.pid'
+        self.d.stub('app_process', 'echo ' + '$' * 2 + ' > "$HYPERTORCH_TEST_ROOT/helper.pid"; exec sleep 30')
+        process = subprocess.Popen(
+            ['sh', str(self.mod / 'native-probe.sh'), '--output', str(self.mod / '.native-capabilities')],
+            env=self.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(marker.exists())
+            pid = int(marker.read_text())
+            process.terminate()
+            process.communicate(timeout=3)
+            self.assertEqual(process.returncode, 130)
+            self.assertFalse(Path(f'/proc/{pid}').exists())
+        finally:
+            if process.poll() is None:
+                process.kill(); process.communicate(timeout=3)
+
+    def test_timeout_is_bounded_and_reported(self):
+        self.d.stub('app_process', 'exec sleep 30')
+        start = time.monotonic()
+        d = self.run_native()
+        self.assertEqual(d['native_reason'], 'probe_timeout')
+        self.assertLess(time.monotonic() - start, 16)
+
 @unittest.skipUnless(os.name == 'posix' and shutil.which('gcc'), 'Linux gcc required')
 class Governor(unittest.TestCase):
     @classmethod
@@ -279,7 +456,7 @@ class Governor(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         p = Path(self.tmp.name)
         self.brightness, self.strobe, self.temp = [p / n for n in ['brightness', 'strobe', 'temp']]
-        self.brightness.write_text('255'); self.strobe.write_text('1'); self.temp.write_text('30000')
+        self.write_value(self.brightness, '255'); self.strobe.write_text('1'); self.write_value(self.temp, '30000')
         self.env = {**os.environ, 'HYPERTORCH_BRIGHTNESS_PATH': str(self.brightness),
                     'HYPERTORCH_STROBE_PATH': str(self.strobe), 'HYPERTORCH_THERMAL_PATH': str(self.temp),
                     'HYPERTORCH_DISABLE_POWERKEEPER_MASK': '1', 'HYPERTORCH_POLL_MS': '20'}
@@ -289,6 +466,11 @@ class Governor(unittest.TestCase):
         if self.process is not None:
             self.process.terminate(); self.process.wait(timeout=3)
         self.tmp.cleanup()
+
+    def write_value(self, path, value):
+        temporary = path.with_name(path.name + '.next')
+        temporary.write_text(str(value))
+        os.replace(temporary, path)
 
     def start(self):
         self.process = subprocess.Popen([str(self.binary)], env=self.env)
@@ -307,30 +489,30 @@ class Governor(unittest.TestCase):
         self.assertEqual(self.brightness.read_bytes(), before)
 
     def test_hysteresis_and_restore(self):
-        self.temp.write_text('81000'); self.start(); self.expect(76)
-        self.temp.write_text('77000'); time.sleep(.12); self.expect(76)
-        self.temp.write_text('74000'); self.expect(255)
+        self.write_value(self.temp, '81000'); self.start(); self.expect(76)
+        self.write_value(self.temp, '77000'); time.sleep(.12); self.expect(76)
+        self.write_value(self.temp, '74000'); self.expect(255)
 
     def test_user_lower_target_wins(self):
-        self.temp.write_text('81000'); self.start(); self.expect(76)
-        self.brightness.write_text('40'); time.sleep(.12)
-        self.temp.write_text('74000'); time.sleep(.12); self.expect(40)
+        self.write_value(self.temp, '81000'); self.start(); self.expect(76)
+        self.write_value(self.brightness, '40'); time.sleep(.12)
+        self.write_value(self.temp, '74000'); time.sleep(.12); self.expect(40)
 
     def test_kernel_off_is_never_reasserted(self):
-        self.temp.write_text('81000'); self.start(); self.expect(76)
-        self.strobe.write_text('0'); self.brightness.write_text('0'); time.sleep(.12)
-        self.temp.write_text('74000'); time.sleep(.12); self.expect(0)
+        self.write_value(self.temp, '81000'); self.start(); self.expect(76)
+        self.strobe.write_text('0'); self.write_value(self.brightness, '0'); time.sleep(.12)
+        self.write_value(self.temp, '74000'); time.sleep(.12); self.expect(0)
         self.assertEqual(self.strobe.read_text(), '0')
 
     def test_sensor_loss_clamps_and_cancels_restore(self):
-        self.start(); time.sleep(.1); self.temp.write_text('unavailable'); self.expect(76)
-        self.temp.write_text('30000'); time.sleep(1.2); self.expect(76)
+        self.start(); time.sleep(.1); self.write_value(self.temp, 'unavailable'); self.expect(76)
+        self.write_value(self.temp, '30000'); time.sleep(1.2); self.expect(76)
 
     def test_non255_calibration(self):
         self.env.update(HYPERTORCH_MAX_BRIGHTNESS='1023', HYPERTORCH_STOCK_BRIGHTNESS='300',
                         HYPERTORCH_TRIP_ON_MC='70000', HYPERTORCH_TRIP_OFF_MC='60000')
-        self.brightness.write_text('1023'); self.temp.write_text('71000'); self.start(); self.expect(300)
-        self.temp.write_text('59000'); self.expect(1023)
+        self.write_value(self.brightness, '1023'); self.write_value(self.temp, '71000'); self.start(); self.expect(300)
+        self.write_value(self.temp, '59000'); self.expect(1023)
 
     def test_invalid_calibration_rejected(self):
         self.env['HYPERTORCH_TRIP_OFF_MC'] = '90000'
